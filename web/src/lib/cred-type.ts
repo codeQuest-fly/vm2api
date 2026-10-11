@@ -203,6 +203,23 @@ export function oauthFlavorFor(
 }
 
 /**
+ * 授权链接申请的权限档位，与 flavor 正交：flavor 决定授权入口 / 回调 / 落盘模式，
+ * 档位只决定 scope。`voice` = `org:create_api_key user:profile user:voice user:mcp_servers`。
+ */
+export type OauthScopeProfile = 'default' | 'voice'
+
+export const OAUTH_SCOPE_PROFILES: { id: OauthScopeProfile; label: string }[] =
+  [
+    { id: 'default', label: '默认' },
+    { id: 'voice', label: 'Voice' },
+  ]
+
+/** 只有生成授权链接的方式（授权链接 / Claude Code）才能选档位；Cookie 走换票二进制。 */
+export function supportsScopeProfile(method: ImportMethod): boolean {
+  return method === 'link' || method === 'cc'
+}
+
+/**
  * `POST /vms/import` 的 `type` —— **第三套词汇表**，与 flavor 无关。
  *
  * 后端只认 `apikey` / `console` / `inference` / `setup-token` / `setup_token`；

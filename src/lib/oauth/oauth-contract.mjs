@@ -15,6 +15,8 @@ export const GROVE_SETTINGS_URLS = Object.freeze([
 ])
 export const FULL_OAUTH_SCOPE =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
+/** Voice grant: no user:inference upstream; the slot adds it to local scopes only. */
+export const VOICE_OAUTH_SCOPE = 'org:create_api_key user:profile user:voice user:mcp_servers'
 export const BROWSER_AUTHORIZE_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
 export const TOKEN_UA = 'claude-cli/2.1.293 (external, sdk-cli)'

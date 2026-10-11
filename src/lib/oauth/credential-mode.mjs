@@ -10,6 +10,20 @@ export const CREDENTIAL_SETUP_TOKEN = 'setup-token'
 export const CREDENTIAL_OFFICIAL_SETUP_TOKEN = 'official-setup-token'
 export const CREDENTIAL_APIKEY = 'apikey'
 
+export const SCOPE_INFERENCE = 'user:inference'
+export const SCOPE_VOICE = 'user:voice'
+
+/**
+ * Voice grants (`user:voice`) carry inference rights on the access token, but the
+ * slot's official CLI only attaches the token when local `scopes` lists
+ * user:inference. Add it to the local copy only; the upstream grant is unchanged.
+ */
+export function withVoiceInferenceScope(scopes = []) {
+  const list = Array.isArray(scopes) ? scopes.filter(Boolean) : []
+  if (!list.includes(SCOPE_VOICE) || list.includes(SCOPE_INFERENCE)) return list
+  return [...list, SCOPE_INFERENCE]
+}
+
 export function normalizeCredentialMode(raw) {
   const s = String(raw || '')
     .trim()

@@ -39,6 +39,33 @@ type Credential struct {
 	AuthScheme   string
 }
 
+const (
+	ScopeInference = "user:inference"
+	ScopeVoice     = "user:voice"
+)
+
+// WithVoiceInferenceScope adds user:inference to a voice grant's local scopes.
+// The slot's official CLI only attaches an OAuth token whose local scopes list
+// user:inference; voice access tokens carry inference rights but the refresh
+// response omits that scope. Mirrors withVoiceInferenceScope in credential-mode.mjs.
+func WithVoiceInferenceScope(scopes []string) []string {
+	hasVoice, hasInference := false, false
+	for _, scope := range scopes {
+		switch scope {
+		case ScopeVoice:
+			hasVoice = true
+		case ScopeInference:
+			hasInference = true
+		}
+	}
+	if !hasVoice || hasInference {
+		return scopes
+	}
+	next := make([]string, 0, len(scopes)+1)
+	next = append(next, scopes...)
+	return append(next, ScopeInference)
+}
+
 func NormalizeType(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(strings.ReplaceAll(raw, "_", "-"))) {
 	case TypeOfficialSetupToken, "office-setup-token", "claude-setup-token", "inference":
@@ -251,8 +278,8 @@ func (s *Store) Save(credential Credential, document map[string]any) (Credential
 	if credential.OrgUUID != "" {
 		oauth["orgUuid"] = credential.OrgUUID
 	}
-	if len(credential.Scopes) > 0 {
-		oauth["scopes"] = credential.Scopes
+	if scopes := WithVoiceInferenceScope(credential.Scopes); len(scopes) > 0 {
+		oauth["scopes"] = scopes
 	}
 	if t := NormalizeType(credential.Type); t == TypeSetupToken || t == TypeOfficialSetupToken {
 		oauth["type"] = t

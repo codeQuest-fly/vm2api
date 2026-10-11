@@ -11,12 +11,15 @@ import {
   defaultImportMethod,
   IMPORT_KINDS,
   importMethodsFor,
+  OAUTH_SCOPE_PROFILES,
   importSurfaceFor,
   importTypeFor,
   oauthFlavorFor,
   resolveImportMethod,
+  supportsScopeProfile,
   type ImportKind,
   type ImportMethod,
+  type OauthScopeProfile,
 } from '@/lib/cred-type'
 import { importErrorMessage } from '@/lib/import-errors'
 import { proxyNamedLabel } from '@/lib/vm-status'
@@ -159,13 +162,20 @@ function ClaudeCredentialPanel({
   const [authScheme, setAuthScheme] = useState<AuthScheme>(() =>
     defaultAuthScheme(defaultImportKind())
   )
+  const [scopeProfile, setScopeProfile] = useState<OauthScopeProfile>('default')
   const [link, setLink] = useState<Link>(EMPTY_LINK)
   const [code, setCode] = useState('')
   const [sessionKey, setSessionKey] = useState('')
   const [apiKey, setApiKey] = useState('')
 
   const activeMethod = resolveImportMethod(kind, method)
-  const sig = `${kind}:${activeMethod}`
+  const showScopeProfile = supportsScopeProfile(activeMethod)
+  const activeScopeProfile: OauthScopeProfile = showScopeProfile
+    ? scopeProfile
+    : 'default'
+  const voice = activeScopeProfile === 'voice'
+  // 档位进签名：切换后旧链接作废，不会拿默认会话去换 Voice 票。
+  const sig = `${kind}:${activeMethod}:${activeScopeProfile}`
   const linkReady = !!(link.sessionId && link.authUrl && link.sig === sig)
   const remaining = useCountdown(linkReady ? link.expiresAt : 0)
   const methods = importMethodsFor(kind)
@@ -182,6 +192,13 @@ function ClaudeCredentialPanel({
   function switchMethod(next: ImportMethod) {
     if (next === method) return
     setMethod(next)
+    setLink(EMPTY_LINK)
+    setCode('')
+  }
+
+  function switchScopeProfile(next: OauthScopeProfile) {
+    if (next === scopeProfile) return
+    setScopeProfile(next)
     setLink(EMPTY_LINK)
     setCode('')
   }
@@ -211,6 +228,7 @@ function ClaudeCredentialPanel({
           // 必须发下划线风格的 setup_token —— 发 claude_setup_token 会被静默
           // 降级成 CAI PKCE 流程且不报错。
           flavor: oauthFlavorFor(kind, activeMethod),
+          scope_profile: activeScopeProfile,
           force,
         }),
       }),
@@ -467,20 +485,33 @@ function ClaudeCredentialPanel({
             </Button>
           </div>
           <Hint>
-            {kind === 'setup-token'
-              ? `申请完整 OAuth 权限，换票后采集身份并开启账号 Grove（Help improve Claude）。浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。以 Setup Token 模式运行，不跑官方初装。`
-              : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份并开启账号 Grove（Help improve Claude）。`}
+            {voice
+              ? `申请 Voice 权限（org:create_api_key、user:profile、user:voice、user:mcp_servers），换票后采集身份。浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。可自动续期，不跑官方初装。`
+              : kind === 'setup-token'
+                ? `申请完整 OAuth 权限，换票后采集身份并开启账号 Grove（Help improve Claude）。浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。以 Setup Token 模式运行，不跑官方初装。`
+                : `浏览器须走 ${proxyHint || '同一槽出口'}，授权码须含 # 后半段。换票后采集身份并开启账号 Grove（Help improve Claude）。`}
           </Hint>
         </div>
       ) : (
         <div className='space-y-2'>
           <Hint>
-            {kind === 'setup-token'
-              ? `连接形式：生成完整 OAuth 权限授权链接。换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一槽出口'}；落盘后仍以 Setup Token 模式运行。`
-              : activeMethod === 'cc'
-                ? '官方 Claude Code 授权页。换票经槽 SOCKS5，打开链接仍是本机浏览器。'
-                : `换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一 SOCKS5'}。`}
+            {voice
+              ? `连接形式：生成 Voice 权限授权链接（org:create_api_key、user:profile、user:voice、user:mcp_servers）。换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一槽出口'}；落盘后按${kind === 'setup-token' ? ' Setup Token' : ' OAuth'} 模式运行，不跑官方初装。`
+              : kind === 'setup-token'
+                ? `连接形式：生成完整 OAuth 权限授权链接。换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一槽出口'}；落盘后仍以 Setup Token 模式运行。`
+                : activeMethod === 'cc'
+                  ? '官方 Claude Code 授权页。换票经槽 SOCKS5，打开链接仍是本机浏览器。'
+                  : `换票经槽 SOCKS5，浏览器须走 ${proxyHint || '同一 SOCKS5'}。`}
           </Hint>
+          {showScopeProfile ? (
+            <Seg
+              label='授权权限'
+              value={activeScopeProfile}
+              options={OAUTH_SCOPE_PROFILES}
+              onChange={switchScopeProfile}
+              disabled={busy}
+            />
+          ) : null}
           <Button
             size='sm'
             disabled={busy}

@@ -3554,6 +3554,7 @@ export function createPanelHandler(ctx) {
             vmId: id,
             proxyUrl: slotProxy.proxyUrl,
             flavor,
+            scopeProfile: body.scope_profile || body.scopeProfile,
           })
           const px = existing.proxy || {}
           return json(
@@ -3672,6 +3673,8 @@ export function createPanelHandler(ctx) {
             oauth,
             source: oauth.source || 'oauth-auth-url',
             name: body.name,
+            // Voice grants lack user:sessions:claude_code, so official first-run cannot succeed.
+            skipOfficialCc: oauth.scope_profile === 'voice',
           })
           if (!committed.ok) {
             return json(res, committed.status || 502, { ok: false, error: committed.error })

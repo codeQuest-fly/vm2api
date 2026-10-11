@@ -159,6 +159,44 @@ func TestSaveSetupTokenClearsRefresh(t *testing.T) {
 	}
 }
 
+func TestSaveVoiceGrantKeepsLocalInferenceScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	seed := `{"type":"setup-token","claudeAiOauth":{"accessToken":"old","refreshToken":"rt","scopes":["user:profile","user:voice","user:inference"]}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(path)
+	current, document, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A voice refresh response returns its granted scopes without user:inference.
+	current.AccessToken = "new"
+	current.Scopes = []string{"user:mcp_servers", "user:profile", "user:voice"}
+	if _, err := store.Save(current, document); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"user:mcp_servers", "user:profile", "user:voice", "user:inference"}
+	if strings.Join(loaded.Scopes, " ") != strings.Join(want, " ") {
+		t.Fatalf("scopes = %v, want %v", loaded.Scopes, want)
+	}
+}
+
+func TestWithVoiceInferenceScopeLeavesOtherGrants(t *testing.T) {
+	full := []string{"user:profile", "user:inference"}
+	if got := WithVoiceInferenceScope(full); strings.Join(got, " ") != "user:profile user:inference" {
+		t.Fatalf("full grant changed: %v", got)
+	}
+	profile := []string{"user:profile"}
+	if got := WithVoiceInferenceScope(profile); len(got) != 1 {
+		t.Fatalf("non-voice grant changed: %v", got)
+	}
+}
+
 func TestFullScopeSetupTokenLabelPreservesExplicitType(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials.json")
 	seed := `{"type":"setup-token","claudeAiOauth":{"accessToken":"full","refreshToken":"refresh","scopes":["user:profile","user:inference","user:sessions:claude_code"]}}`

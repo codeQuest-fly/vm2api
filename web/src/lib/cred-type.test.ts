@@ -2,13 +2,17 @@ import type { Vm } from '@/types/panel-vm'
 import { describe, expect, it } from 'vitest'
 import {
   credEndpointOf,
+  defaultAuthScheme,
   defaultImportKind,
+  IMPORT_KINDS,
   defaultImportMethod,
   importMethodsFor,
   importSurfaceFor,
   importTypeFor,
+  OAUTH_SCOPE_PROFILES,
   oauthFlavorFor,
   resolveImportMethod,
+  supportsScopeProfile,
 } from '@/lib/cred-type'
 
 describe('setup-token import defaults', () => {
@@ -36,6 +40,21 @@ describe('setup-token import defaults', () => {
     ])
     expect(importTypeFor('oauth')).toBe('')
     expect(oauthFlavorFor('oauth', 'cc')).toBe('claude_code')
+  })
+
+  it('keeps Voice as a scope profile beside each auth link, not a kind', () => {
+    expect(IMPORT_KINDS.map((k) => k.id)).toEqual([
+      'setup-token',
+      'oauth',
+      'apikey',
+    ])
+    expect(OAUTH_SCOPE_PROFILES.map((p) => p.id)).toEqual(['default', 'voice'])
+    expect(supportsScopeProfile('link')).toBe(true)
+    expect(supportsScopeProfile('cc')).toBe(true)
+    expect(supportsScopeProfile('session')).toBe(false)
+    expect(oauthFlavorFor('setup-token', 'link')).toBe('setup_token')
+    expect(oauthFlavorFor('oauth', 'link')).toBe('cai')
+    expect(defaultAuthScheme('setup-token')).toBe('authorization_bearer')
   })
 
   it('routes OpenAI slots to Codex import, not Setup Token / Console', () => {

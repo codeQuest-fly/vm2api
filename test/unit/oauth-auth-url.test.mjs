@@ -91,6 +91,39 @@ test('generateAuthUrl setup_token uses full scope on CAI but keeps setup-token f
   assert.equal(session.source, 'oauth-setup-token')
 })
 
+test('voice scope profile swaps only the scope on every auth-link flavor', () => {
+  const voiceScope = 'scope=org%3Acreate_api_key+user%3Aprofile+user%3Avoice+user%3Amcp_servers&'
+  for (const flavor of ['cai', 'claude_code', 'setup_token']) {
+    resetAuthUrlSessions()
+    const spec = OAUTH_FLAVORS[flavor]
+    const out = generateAuthUrl({
+      vmId: 'vm-01',
+      proxyUrl: 'socks5h://127.0.0.1:1080',
+      flavor,
+      scopeProfile: 'voice',
+    })
+    assert.equal(out.flavor, flavor)
+    assert.equal(out.scope_profile, 'voice')
+    assert.ok(out.auth_url.startsWith(`${spec.authorizeUrl}?code=true`), out.auth_url)
+    assert.ok(out.auth_url.includes(encodeURIComponent(spec.redirectUri)))
+    assert.ok(out.auth_url.includes(voiceScope), out.auth_url)
+    assert.ok(!out.auth_url.includes('user%3Ainference'))
+    const session = peekAuthUrlSession(out.session_id)
+    assert.equal(session.flavor, flavor)
+    assert.equal(session.scopeProfile, 'voice')
+    assert.equal(session.source, spec.source)
+  }
+})
+
+test('unknown or missing scope profile keeps the flavor default scope', () => {
+  for (const scopeProfile of [undefined, '', 'default', 'inference']) {
+    resetAuthUrlSessions()
+    const out = generateAuthUrl({ vmId: 'vm-01', proxyUrl: '', flavor: 'setup_token', scopeProfile })
+    assert.equal(out.scope_profile, 'default')
+    assert.equal(peekAuthUrlSession(out.session_id).scope, OAUTH_FLAVORS.setup_token.scope)
+  }
+})
+
 test('buildAuthorizationURL matches sub2api parameter order', () => {
   const url = buildAuthorizationURL('st', 'ch')
   assert.ok(url.startsWith(`${AUTHORIZE_URL}?code=true&client_id=${CLIENT_ID}&response_type=code`))
@@ -218,16 +251,19 @@ function mockLegacyService(t) {
 
 test('skip-Grove code exchange preserves all flavor PKCE, redirect, provider-state and metadata contracts', async (t) => {
   isolateOAuthEnv(t)
-  for (const [flavor, returnedState] of [
+  for (const [flavor, returnedState, scopeProfile = 'default'] of [
     ['cai', 'provider-cai-state'],
     ['claude_code', 'provider-cc-state'],
     ['cai', undefined],
     ['claude_code', undefined],
     ['setup_token', 'session'],
     ['setup_token', undefined],
+    ['setup_token', 'session', 'voice'],
+    ['cai', 'provider-cai-state', 'voice'],
+    ['claude_code', undefined, 'voice'],
   ]) {
-    await t.test(`${flavor}: ${returnedState || 'no suffix'}`, async () => {
-      const generated = generateAuthUrl({ vmId: 'vm-strict', proxyUrl: '', flavor })
+    await t.test(`${flavor}/${scopeProfile}: ${returnedState || 'no suffix'}`, async () => {
+      const generated = generateAuthUrl({ vmId: 'vm-strict', proxyUrl: '', flavor, scopeProfile })
       const session = peekAuthUrlSession(generated.session_id)
       const url = new URL(generated.auth_url)
       const state = returnedState === 'session' ? session.state : returnedState
@@ -267,11 +303,36 @@ test('skip-Grove code exchange preserves all flavor PKCE, redirect, provider-sta
       assert.equal(result.email, 'strict@example.test')
       assert.equal(result.source, OAUTH_FLAVORS[flavor].source)
       assert.equal(result.flavor, flavor)
+      assert.equal(result.scope_profile, scopeProfile)
       assert.deepEqual(result.grove_settings, { status: 'skipped', reason: 'disabled_by_operator' })
       assert.equal(peekAuthUrlSession(generated.session_id), null)
       assert.equal(session.exchanging, false)
     })
   }
+})
+
+test('skip-Grove voice exchange keeps the granted voice scope without user:inference', async (t) => {
+  isolateOAuthEnv(t)
+  const generated = generateAuthUrl({ vmId: 'vm-voice', proxyUrl: '', flavor: 'setup_token', scopeProfile: 'voice' })
+  const voiceScope = 'user:mcp_servers user:profile user:voice'
+  const seen = []
+  const result = await exchangeAuthCode({
+    sessionId: generated.session_id,
+    code: `voice-code#${peekAuthUrlSession(generated.session_id).state}`,
+    vmId: 'vm-voice',
+    skipGroveSettings: true,
+    fetchImpl: async (url, init) => {
+      seen.push({ url, init })
+      if (url === CLAUDE_CLI_BOOTSTRAP_URL) return oauthResponse(200, exchangedIdentity)
+      return oauthResponse(200, { ...exchangedToken, scope: voiceScope })
+    },
+  })
+  assert.equal(seen.filter(({ init }) => init.method === 'PATCH').length, 0)
+  assert.equal(result.flavor, 'setup_token')
+  assert.equal(result.scope_profile, 'voice')
+  assert.equal(result.source, 'oauth-setup-token')
+  assert.equal(result.scope, voiceScope)
+  assert.equal(result.refresh_token, exchangedToken.refresh_token)
 })
 
 test('enabled server environment values select strict exchange without the fake-session branch', async (t) => {

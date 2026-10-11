@@ -18,6 +18,7 @@ import {
   isAnySetupTokenMode,
   isOfficialSetupTokenMode,
   isSetupTokenMode,
+  withVoiceInferenceScope,
 } from './credential-mode.mjs'
 import { resolveAuthScheme } from './auth-scheme.mjs'
 import { flattenOauthIdentity, normalizeSubscriptionType } from './oauth-identity.mjs'
@@ -363,8 +364,10 @@ export function writeWorkerCredentialFile(homeDir, cred) {
   if (isOfficialSetupTokenMode(mode)) {
     scopes = ['user:inference']
   } else if (isSetupTokenMode(mode)) {
-    scopes = scopes.map((s) => (s === 'inference' ? 'user:inference' : s))
+    scopes = withVoiceInferenceScope(scopes.map((s) => (s === 'inference' ? 'user:inference' : s)))
     if (!scopes.includes('user:inference')) scopes = ['user:inference']
+  } else {
+    scopes = withVoiceInferenceScope(scopes)
   }
   const expiresAtMs = expiresAtToMs(n.expires_at) || null
   let previousType = null

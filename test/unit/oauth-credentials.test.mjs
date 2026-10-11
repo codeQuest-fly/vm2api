@@ -346,6 +346,21 @@ test('writeWorkerCredentialFile preserves full-scope setup-token metadata', () =
   fs.rmSync(home, { recursive: true, force: true })
 })
 
+test('writeWorkerCredentialFile adds local user:inference to voice grants', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-voice-'))
+  writeWorkerCredentialFile(home, {
+    type: 'setup-token',
+    access_token: 'sk-ant-oat01-VOICE',
+    refresh_token: 'sk-ant-ort01-VOICE',
+    scope: 'user:mcp_servers user:profile user:voice',
+  })
+  const raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'credentials.json'), 'utf8'))
+  assert.equal(raw.type, 'setup-token')
+  assert.equal(raw.claudeAiOauth.refreshToken, 'sk-ant-ort01-VOICE')
+  assert.deepEqual(raw.claudeAiOauth.scopes, ['user:mcp_servers', 'user:profile', 'user:voice', 'user:inference'])
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
 test('writeWorkerCredentialFile stores claudeAiOauth and reads back', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-write-'))
   writeWorkerCredentialFile(home, {

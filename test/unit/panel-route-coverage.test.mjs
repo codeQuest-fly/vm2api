@@ -175,7 +175,13 @@ test('PUT proxy restarts kin-egress when connection or domain_forward changes', 
   assert.match(routes, /result\.domain_forward_changed \|\| result\.connection_changed/)
 })
 
-async function exchangeRouteHarness({ groveSettings, error, body = {}, commitResult = { ok: true } } = {}) {
+async function exchangeRouteHarness({
+  groveSettings,
+  error,
+  body = {},
+  commitResult = { ok: true },
+  scopeProfile,
+} = {}) {
   const routes = fs.readFileSync(path.join(root, 'src/lib/admin/panel-routes.mjs'), 'utf8')
   const start = routes.indexOf(
     "      if (req.method === 'POST' && /^\\/api\\/panel\\/vms\\/[^/]+\\/oauth\\/exchange-code$/.test(p)) {",
@@ -198,6 +204,7 @@ async function exchangeRouteHarness({ groveSettings, error, body = {}, commitRes
     source: 'oauth-auth-url',
     flavor: 'cai',
     ...(groveSettings ? { grove_settings: groveSettings } : {}),
+    ...(scopeProfile ? { scope_profile: scopeProfile } : {}),
   }
   const bindings = {
     req: { method: 'POST' },
@@ -270,6 +277,19 @@ test('exchange-code route forwards only internal Grove metadata and still uses t
     assert.equal(JSON.stringify(response.body).includes('privacy_updated'), false)
     assert.equal(JSON.stringify(response.body).includes('route-access'), false)
     assert.equal(JSON.stringify(response.body).includes('route-refresh'), false)
+  }
+})
+
+test('exchange-code route skips official Claude Code first-run only for voice grants', async () => {
+  for (const [scopeProfile, skip] of [
+    ['voice', true],
+    ['default', false],
+    [undefined, false],
+  ]) {
+    const { response, commits } = await exchangeRouteHarness({ scopeProfile })
+    assert.equal(response.status, 200)
+    assert.equal(commits.length, 1)
+    assert.equal(commits[0].skipOfficialCc, skip)
   }
 })
 

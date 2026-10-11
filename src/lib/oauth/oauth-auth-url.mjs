@@ -9,7 +9,7 @@ import crypto from 'node:crypto'
 import { exchangeTokenViaCookieAuth } from './cookie-auth.mjs'
 import { exchangeAuthorizationCodeWithoutGrove } from './oauth-code-exchange.mjs'
 import { enrichOauthIdentity, flattenOauthIdentity } from './oauth-identity.mjs'
-import { FULL_OAUTH_SCOPE } from './oauth-contract.mjs'
+import { FULL_OAUTH_SCOPE, VOICE_OAUTH_SCOPE } from './oauth-contract.mjs'
 
 export const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 export const SESSION_TTL_MS = 30 * 60 * 1000
@@ -43,6 +43,12 @@ export const OAUTH_FLAVORS = Object.freeze({
     scope: FULL_OAUTH_SCOPE,
     source: 'oauth-setup-token',
   },
+})
+
+/** Scope profile is orthogonal to flavor: flavor picks endpoints and runtime mode, the profile picks scope. */
+export const OAUTH_SCOPE_PROFILES = Object.freeze({
+  default: null,
+  voice: VOICE_OAUTH_SCOPE,
 })
 
 export const AUTHORIZE_URL = OAUTH_FLAVORS.cai.authorizeUrl
@@ -101,6 +107,14 @@ export function normalizeOauthFlavor(raw) {
   return 'cai'
 }
 
+export function normalizeScopeProfile(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase() === 'voice'
+    ? 'voice'
+    : 'default'
+}
+
 export function oauthFlavorSpec(raw) {
   return OAUTH_FLAVORS[normalizeOauthFlavor(raw)]
 }
@@ -121,13 +135,15 @@ export function buildAuthorizationURL(state, codeChallenge, scope = SCOPE_OAUTH,
   return `${spec.authorizeUrl}?code=true&client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodedRedirectURI}&scope=${encodedScope}&code_challenge=${codeChallenge}&code_challenge_method=S256&state=${state}`
 }
 
-export function generateAuthUrl({ vmId, proxyUrl, flavor } = {}) {
+export function generateAuthUrl({ vmId, proxyUrl, flavor, scopeProfile } = {}) {
   sweepExpired()
   if (!vmId) throw fail('vm_required', 'vm_id required (先创建虚拟机)')
   if (normalizeSocks(proxyUrl) == null) {
     throw fail('proxy_required', '虚拟机未绑定 SOCKS5，请先分配代理再生成授权链接')
   }
   const spec = oauthFlavorSpec(flavor)
+  const profile = normalizeScopeProfile(scopeProfile)
+  const scope = OAUTH_SCOPE_PROFILES[profile] || spec.scope
   const state = generateState()
   const codeVerifier = generateCodeVerifier()
   const codeChallenge = generateCodeChallenge(codeVerifier)
@@ -137,7 +153,8 @@ export function generateAuthUrl({ vmId, proxyUrl, flavor } = {}) {
     state,
     codeVerifier,
     flavor: spec.flavor,
-    scope: spec.scope,
+    scope,
+    scopeProfile: profile,
     redirectUri: spec.redirectUri,
     tokenUrls: spec.tokenUrls.slice(),
     source: spec.source,
@@ -146,11 +163,12 @@ export function generateAuthUrl({ vmId, proxyUrl, flavor } = {}) {
     createdAt,
   })
   return {
-    auth_url: buildAuthorizationURL(state, codeChallenge, spec.scope, spec.flavor),
+    auth_url: buildAuthorizationURL(state, codeChallenge, scope, spec.flavor),
     session_id: sessionId,
     expires_at: createdAt + SESSION_TTL_MS,
     vm_id: String(vmId),
     flavor: spec.flavor,
+    scope_profile: profile,
   }
 }
 
@@ -231,6 +249,7 @@ export async function exchangeAuthCode({
         org_uuid: 'org-fake-auth-url',
         source: 'KIN_FAKE_SESSION_OAUTH',
         flavor: session.flavor || 'cai',
+        scope_profile: session.scopeProfile || 'default',
       }
     }
     const token = await exchangeCodeForToken(parsed.code, session.codeVerifier, exchangeState, px, session, {
@@ -257,6 +276,7 @@ export async function exchangeAuthCode({
         subscription_type: identity.subscription_type,
         source: session.source || 'oauth-auth-url',
         flavor: session.flavor || 'cai',
+        scope_profile: session.scopeProfile || 'default',
         ...(token.grove_settings ? { grove_settings: token.grove_settings } : {}),
       },
       { proxyUrl: px, fetchImpl },
