@@ -174,3 +174,139 @@ test('PUT proxy restarts kin-egress when connection or domain_forward changes', 
   const routes = fs.readFileSync(path.join(root, 'src/lib/admin/panel-routes.mjs'), 'utf8')
   assert.match(routes, /result\.domain_forward_changed \|\| result\.connection_changed/)
 })
+
+async function exchangeRouteHarness({ groveSettings, error, body = {}, commitResult = { ok: true } } = {}) {
+  const routes = fs.readFileSync(path.join(root, 'src/lib/admin/panel-routes.mjs'), 'utf8')
+  const start = routes.indexOf(
+    "      if (req.method === 'POST' && /^\\/api\\/panel\\/vms\\/[^/]+\\/oauth\\/exchange-code$/.test(p)) {",
+  )
+  const end = routes.indexOf(
+    "      if (req.method === 'GET' && /^\\/api\\/panel\\/vms\\/[^/]+\\/oauth\\/credential$/.test(p)) {",
+    start,
+  )
+  assert.ok(start > 0 && end > start)
+  const response = {}
+  const exchanges = []
+  const commits = []
+  const oauth = {
+    access_token: 'route-access',
+    refresh_token: 'route-refresh',
+    expires_at: 2000000000,
+    email: 'route@example.test',
+    account_uuid: 'route-account',
+    org_uuid: 'route-org',
+    source: 'oauth-auth-url',
+    flavor: 'cai',
+    ...(groveSettings ? { grove_settings: groveSettings } : {}),
+  }
+  const bindings = {
+    req: { method: 'POST' },
+    res: {},
+    p: '/api/panel/vms/vm-01/oauth/exchange-code',
+    cfg: { paths: { project: root } },
+    ctx: { routingConfig: {} },
+    path,
+    fs: {
+      existsSync: () => true,
+      readFileSync: () => JSON.stringify({ id: 'vm-01', claude: {} }),
+    },
+    readBody: async () => ({ session_id: 'route-session', code: 'route-code', ...body }),
+    requireSlotProxy: () => ({ ok: true, proxyUrl: '' }),
+    isCodexVm: () => false,
+    looksLikeOfficialSetupToken: () => false,
+    normalizeOauthFlavor: () => 'cai',
+    SETUP_TOKEN_FLAVOR: 'claude_setup_token',
+    exchangeAuthCode: async (opts) => {
+      exchanges.push(opts)
+      if (error) throw error
+      return oauth
+    },
+    enrichOauthIdentity: async (value) => value,
+    commitImportedOauth: async (opts) => {
+      commits.push(opts)
+      opts.existing.claude = { email: opts.oauth.email, has_refresh: !!opts.oauth.refresh_token }
+      return commitResult
+    },
+    summarizeVm: (value) => ({ id: value.id }),
+    panel: { ok: (data) => ({ ok: true, data }) },
+    json: (_res, status, payload) => {
+      response.status = status
+      response.body = payload
+      return true
+    },
+  }
+  const run = new Function(...Object.keys(bindings), `return (async () => {${routes.slice(start, end)}})()`)
+  await run(...Object.values(bindings))
+  return { response, exchanges, commits, oauth }
+}
+
+test('exchange-code route forwards only internal Grove metadata and still uses the original commit contract', async () => {
+  for (const groveSettings of [undefined, { status: 'skipped', reason: 'disabled_by_operator' }]) {
+    const { response, exchanges, commits, oauth } = await exchangeRouteHarness({
+      groveSettings,
+      body: {
+        name: 'slot-name',
+        skipGroveSettings: true,
+        skip_grove_settings: true,
+        tokenUrls: ['https://evil.test/v1/oauth/token'],
+        token_urls: ['https://evil.test/v1/oauth/token'],
+        redirect_uri: 'https://evil.test/callback',
+        grove_settings: { status: 'privacy_updated' },
+      },
+    })
+    assert.equal(response.status, 200)
+    assert.equal(response.body.ok, true)
+    assert.deepEqual(exchanges, [{ sessionId: 'route-session', code: 'route-code', proxyUrl: '', vmId: 'vm-01' }])
+    assert.equal(commits.length, 1)
+    assert.equal(commits[0].oauth, oauth)
+    assert.equal(commits[0].vmId, 'vm-01')
+    assert.equal(commits[0].vmPath, path.join(root, 'vms', 'vm-01.json'))
+    assert.equal(commits[0].source, oauth.source)
+    assert.equal(commits[0].name, 'slot-name')
+    assert.equal(response.body.data.oauth_email, oauth.email)
+    assert.equal(response.body.data.has_refresh, true)
+    assert.equal(Object.hasOwn(response.body.data, 'grove_settings'), !!groveSettings)
+    if (groveSettings) assert.deepEqual(response.body.data.grove_settings, groveSettings)
+    assert.equal(JSON.stringify(response.body).includes('privacy_updated'), false)
+    assert.equal(JSON.stringify(response.body).includes('route-access'), false)
+    assert.equal(JSON.stringify(response.body).includes('route-refresh'), false)
+  }
+})
+
+test('exchange-code route accepts only safe internal HTTP statuses and never turns upstream 401 into panel logout', async () => {
+  for (const httpStatus of [400, 409, 502, 504, 401, 403, 404, 500, '400', undefined]) {
+    const error = Object.assign(new Error('Filtered upstream failure'), { code: 'bootstrap_failed', httpStatus })
+    const { response, commits } = await exchangeRouteHarness({ error })
+    assert.equal(response.status, [400, 409, 502, 504].includes(httpStatus) ? httpStatus : 502)
+    assert.equal(response.body.ok, false)
+    assert.equal(response.body.error.code, 'bootstrap_failed')
+    assert.equal(commits.length, 0)
+  }
+  const { response } = await exchangeRouteHarness({
+    error: Object.assign(new Error('Session expired'), { code: 'session_expired' }),
+  })
+  assert.equal(response.status, 400)
+})
+
+test('exchange-code route preserves commit rejection rather than returning a fake success', async () => {
+  const failure = { code: 'credential_import_failed', message: 'Commit failed' }
+  const { response, commits } = await exchangeRouteHarness({ commitResult: { ok: false, status: 502, error: failure } })
+  assert.equal(commits.length, 1)
+  assert.equal(response.status, 502)
+  assert.equal(response.body.ok, false)
+  assert.deepEqual(response.body.error, failure)
+})
+
+test('panel authentication, ACL and VM ownership guards still precede authorization-code exchange', () => {
+  const routes = fs.readFileSync(path.join(root, 'src/lib/admin/panel-routes.mjs'), 'utf8')
+  const exchange = routes.indexOf('/oauth\\/exchange-code$/.test(p)')
+  for (const guard of [
+    'if (!requireAuth(req, res)) return',
+    'const isPanelOperator =',
+    'const gate = authorizePanelRoute(',
+    'denyIfUserMissesVm(req, res, {',
+  ]) {
+    const index = routes.indexOf(guard)
+    assert.ok(index > 0 && index < exchange, guard)
+  }
+})

@@ -40,6 +40,16 @@ Cookie authorize 的组织 UUID 同时出现在 `/v1/oauth/{uuid}/authorize` 路
 
 SSH 扩展槽同样由控制面经绑定出口换票。拿到授权后，提交阶段先启动节点槽并同步凭据；远端配置与票据均按 UTF-8/Buffer 的字节长度分块写入 SFTP，0600 临时文件原子替换，不跟随目标符号链接。节点启动失败不代表上游授权失败。
 
+### 授权码兑换可选跳过 Grove
+
+服务端环境变量 `VM2API_SKIP_GROVE_SETTINGS` 默认 `0`（关闭）。只有值为 `1` 或 `true` 时开启；修改服务端环境后需重启控制面服务才生效，浏览器/API 请求不能控制此开关。上图为默认路径：关闭时继续使用原 `kin-oauth-auth` 二进制完成授权码兑换、bootstrap 和 Grove 设置。
+
+开启后，仅授权链接的 `cai`、`claude_code`、`setup_token` 三种 flavor 在 `POST /api/panel/vms/:id/oauth/exchange-code` 中改用控制面直接执行 token POST + 官方 bootstrap GET，不发送 Grove PATCH。仍要求 VM 绑定出口、30 分钟内的会话、原 PKCE/redirect/state 校验，以及真实有效的 access token、过期时间和完整 bootstrap 账号身份；本地出口 `proxy_url: ""` 明确直连，未绑定或代理认证失败仍拒绝，不回退直连。token 候选仅使用服务端定义的三个官方 HTTPS `/v1/oauth/token` 地址，只在 404/405 时尝试下一个候选；`invalid_grant`、401/403、网络错误及超时不重放授权码。
+
+每跳默认 15 秒截止覆盖请求和完整响应 body，响应最多 64 KiB，拒绝 HTTP 重定向并保持 TLS 认证。取得有效 token 即消费授权会话；后续 bootstrap 拒绝、超时或身份不完整都会失败，不提交凭据，需重新生成授权链接，不能用旧授权码重试。成功仍经原 `commitImportedOauth` 提交真实凭据，响应只额外带 `grove_settings: { status: "skipped", reason: "disabled_by_operator" }`，表示运营者禁用了此步骤，不表示隐私设置更新成功。
+
+此开关不会更改 Anthropic 账号的隐私选择，也不会更改 vm2api 或官方 Claude Code 的遥测配置。sessionKey/Cookie 导入、官方一年期 Setup Token、已有票据转换、刷新和官方 CLI 初装流程均不受此开关影响。
+
 ## 刷新规则
 
 **只有 host `RefreshIfNeeded` 决定是否换票**，没有第二套定时器。Go worker 不再 Ensure。

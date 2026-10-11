@@ -3687,11 +3687,15 @@ export function createPanelHandler(ctx) {
               official_cc_bootstrap: committed.official_cc_bootstrap || null,
               source: oauth.source || 'oauth-auth-url',
               flavor: oauth.flavor || null,
+              ...(oauth.grove_settings ? { grove_settings: oauth.grove_settings } : {}),
             }),
           )
         } catch (e) {
-          const status =
-            e.code === 'session_expired' || e.code === 'session_vm_mismatch' || e.code === 'code_required' ? 400 : 502
+          const status = [400, 409, 502, 504].includes(e.httpStatus)
+            ? e.httpStatus
+            : e.code === 'session_expired' || e.code === 'session_vm_mismatch' || e.code === 'code_required'
+              ? 400
+              : 502
           return json(res, status, {
             ok: false,
             error: { code: e.code || 'exchange_code_failed', message: String(e.message || e).slice(0, 240) },

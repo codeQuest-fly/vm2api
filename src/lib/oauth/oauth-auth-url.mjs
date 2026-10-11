@@ -7,6 +7,7 @@
  */
 import crypto from 'node:crypto'
 import { exchangeTokenViaCookieAuth } from './cookie-auth.mjs'
+import { exchangeAuthorizationCodeWithoutGrove } from './oauth-code-exchange.mjs'
 import { enrichOauthIdentity, flattenOauthIdentity } from './oauth-identity.mjs'
 import { FULL_OAUTH_SCOPE } from './oauth-contract.mjs'
 
@@ -76,9 +77,10 @@ function sweepExpired(now = Date.now()) {
   }
 }
 
-function fail(code, message) {
+function fail(code, message, httpStatus = null) {
   const err = new Error(message)
   err.code = code
+  if (httpStatus != null) err.httpStatus = httpStatus
   return err
 }
 
@@ -159,20 +161,39 @@ function parseAuthCode(fullCode) {
   return { code: raw.slice(0, hash), state: raw.slice(hash + 1) }
 }
 
-async function exchangeCodeForToken(authCode, codeVerifier, state, proxyUrl, session) {
+async function exchangeCodeForToken(
+  authCode,
+  codeVerifier,
+  state,
+  proxyUrl,
+  session,
+  { fetchImpl = null, skipGroveSettings = false, onTokenExchanged = null } = {},
+) {
   const px = normalizeSocks(proxyUrl)
   if (px == null) throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
-  return exchangeTokenViaCookieAuth({
+  const opts = {
     code: authCode,
     codeVerifier,
     state,
     proxyUrl: px,
     redirectUri: session.redirectUri,
     tokenUrls: session.tokenUrls,
-  })
+    fetchImpl,
+  }
+  return skipGroveSettings
+    ? exchangeAuthorizationCodeWithoutGrove({ ...opts, onTokenExchanged })
+    : exchangeTokenViaCookieAuth(opts)
 }
 
-export async function exchangeAuthCode({ sessionId, code, proxyUrl, vmId, fetchImpl = null } = {}) {
+export async function exchangeAuthCode({
+  sessionId,
+  code,
+  proxyUrl,
+  vmId,
+  fetchImpl = null,
+  skipGroveSettings = process.env.VM2API_SKIP_GROVE_SETTINGS === '1' ||
+    process.env.VM2API_SKIP_GROVE_SETTINGS === 'true',
+} = {}) {
   sweepExpired()
   const session = sessions.get(sessionId)
   if (!session || Date.now() - session.createdAt > SESSION_TTL_MS) {
@@ -182,55 +203,65 @@ export async function exchangeAuthCode({ sessionId, code, proxyUrl, vmId, fetchI
   if (vmId && session.vmId && session.vmId !== String(vmId)) {
     throw fail('session_vm_mismatch', '授权会话与当前虚拟机不匹配')
   }
+  if (session.exchanging) throw fail('exchange_in_progress', '授权码正在兑换，请勿重复提交', 409)
   const parsed = parseAuthCode(code)
   if (!parsed.code) throw fail('code_required', '请粘贴授权码')
   if (session.flavor === 'setup_token' && parsed.state && parsed.state !== session.state)
-    throw fail('state_mismatch', '授权 state 不匹配，请重新生成授权链接')
+    throw fail('state_mismatch', '授权 state 不匹配，请重新生成授权链接', 400)
   const px = proxyUrl ?? session.proxyUrl
   if (px == null) throw fail('proxy_required', '虚拟机未绑定 SOCKS5，无法换票')
-
-  if (process.env.KIN_FAKE_SESSION_OAUTH === '1' || process.env.KIN_FAKE_SESSION_OAUTH === 'true') {
-    sessions.delete(sessionId)
-    const now = Math.floor(Date.now() / 1000)
-    return {
-      access_token: 'sk-ant-oat01-FAKE-AUTH-URL',
-      refresh_token: 'sk-ant-ort01-FAKE-AUTH-URL',
-      token_type: 'Bearer',
-      expires_in: 8 * 3600,
-      expires_at: now + 8 * 3600,
-      scope: session.scope,
-      email_address: 'fake-oauth@kin.test',
-      account_uuid: 'acct-fake-auth-url',
-      org_uuid: 'org-fake-auth-url',
-      source: 'KIN_FAKE_SESSION_OAUTH',
-      flavor: session.flavor || 'cai',
-    }
-  }
 
   // Full OAuth paste codes carry the provider's exchange state, not necessarily
   // the authorize nonce. PKCE still binds the code to this VM's live session.
   const exchangeState = session.flavor === 'setup_token' ? parsed.state || session.state : parsed.state
-  const token = await exchangeCodeForToken(parsed.code, session.codeVerifier, exchangeState, px, session)
-  sessions.delete(sessionId)
-  const expiresIn = Number(token.expires_in || 0)
-  const now = Math.floor(Date.now() / 1000)
-  const identity = flattenOauthIdentity(token)
-  return enrichOauthIdentity(
-    {
-      access_token: token.access_token,
-      refresh_token: token.refresh_token || '',
-      token_type: token.token_type || 'Bearer',
-      expires_in: expiresIn,
-      expires_at: token.expires_at || now + expiresIn,
-      scope: token.scope || session.scope,
-      email: identity.email,
-      email_address: identity.email,
-      account_uuid: identity.account_uuid,
-      org_uuid: identity.org_uuid,
-      subscription_type: identity.subscription_type,
-      source: session.source || 'oauth-auth-url',
-      flavor: session.flavor || 'cai',
-    },
-    { proxyUrl: px, fetchImpl },
-  )
+  session.exchanging = true
+  try {
+    if (process.env.KIN_FAKE_SESSION_OAUTH === '1' || process.env.KIN_FAKE_SESSION_OAUTH === 'true') {
+      sessions.delete(sessionId)
+      const now = Math.floor(Date.now() / 1000)
+      return {
+        access_token: 'sk-ant-oat01-FAKE-AUTH-URL',
+        refresh_token: 'sk-ant-ort01-FAKE-AUTH-URL',
+        token_type: 'Bearer',
+        expires_in: 8 * 3600,
+        expires_at: now + 8 * 3600,
+        scope: session.scope,
+        email_address: 'fake-oauth@kin.test',
+        account_uuid: 'acct-fake-auth-url',
+        org_uuid: 'org-fake-auth-url',
+        source: 'KIN_FAKE_SESSION_OAUTH',
+        flavor: session.flavor || 'cai',
+      }
+    }
+    const token = await exchangeCodeForToken(parsed.code, session.codeVerifier, exchangeState, px, session, {
+      fetchImpl,
+      skipGroveSettings,
+      onTokenExchanged: () => sessions.delete(sessionId),
+    })
+    sessions.delete(sessionId)
+    const expiresIn = Number(token.expires_in || 0)
+    const now = Math.floor(Date.now() / 1000)
+    const identity = flattenOauthIdentity(token)
+    return await enrichOauthIdentity(
+      {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token || '',
+        token_type: token.token_type || 'Bearer',
+        expires_in: expiresIn,
+        expires_at: token.expires_at || now + expiresIn,
+        scope: token.scope || session.scope,
+        email: identity.email,
+        email_address: identity.email,
+        account_uuid: identity.account_uuid,
+        org_uuid: identity.org_uuid,
+        subscription_type: identity.subscription_type,
+        source: session.source || 'oauth-auth-url',
+        flavor: session.flavor || 'cai',
+        ...(token.grove_settings ? { grove_settings: token.grove_settings } : {}),
+      },
+      { proxyUrl: px, fetchImpl },
+    )
+  } finally {
+    session.exchanging = false
+  }
 }
